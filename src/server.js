@@ -54,6 +54,11 @@ let books = [
     },
 ];
 
+// Root route for testing
+app.get('/', (req, res) => {
+    res.json({ message: 'Genzz Backend API is running. Use /api endpoints (e.g., /api/generate-key, /api/books).' });
+});
+
 // Middleware to verify JWT
 const verifyToken = (req, res, next) => {
     const token = req.cookies.token || req.headers['authorization']?.split(' ')[1];
@@ -84,6 +89,7 @@ async function shortenUrl(originalUrl) {
     }
 
     try {
+        console.log('Attempting to shorten URL:', originalUrl);
         const response = await fetch('https://linkpays.in/api', {
             method: 'POST',
             headers: {
@@ -94,6 +100,7 @@ async function shortenUrl(originalUrl) {
         });
 
         const data = await response.json();
+        console.log('Linkpays.in response:', data);
         if (data.status === 'success' && data.shortenedUrl) {
             console.log('Shortened URL:', data.shortenedUrl);
             return data.shortenedUrl;

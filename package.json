@@ -1,0 +1,24 @@
+{
+    "name": "genzz-backend",
+    "version": "1.0.0",
+    "description": "Backend for Genzz PDF Library with Linkpays.in URL shortening",
+    "main": "src/server.js",
+    "scripts": {
+        "start": "node src/server.js",
+        "dev": "nodemon src/server.js"
+    },
+    "dependencies": {
+        "cookie-parser": "^1.4.6",
+        "cors": "^2.8.5",
+        "dotenv": "^16.4.5",
+        "express": "^4.19.2",
+        "jsonwebtoken": "^9.0.2",
+        "node-fetch": "^2.7.0",
+        "uuid": "^10.0.0"
+    },
+    "devDependencies": {
+        "nodemon": "^3.1.4"
+    },
+    "author": "GenZ-Coders",
+    "license": "ISC"
+}

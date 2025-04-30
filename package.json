@@ -1,29 +1,30 @@
 {
-  "name": "genzz-backend",
-  "version": "1.0.0",
-  "description": "Backend for Genzz Library",
-  "main": "src/server.js",
-  "scripts": {
-    "start": "node src/server.js",
-    "dev": "nodemon src/server.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "cors": "^2.8.5",
-    "jsonwebtoken": "^9.0.2",
-    "cookie-parser": "^1.4.6",
-    "uuid": "^9.0.1",
-    "mongoose": "^8.0.0",
-    "helmet": "^7.1.0",
-    "express-rate-limit": "^7.1.5",
-    "winston": "^3.11.0",
-    "node-fetch": "^2.7.0",
-    "multer": "^1.4.5-lts.1",
-    "axios": "^1.6.7",
-    "form-data": "^4.0.0",
-    "node-telegram-bot-api": "^0.66.0"
-  },
-  "devDependencies": {
-    "nodemon": "^3.0.3"
-  }
+       "name": "genzz-backend",
+       "version": "1.0.0",
+       "description": "Backend for Genzz Library",
+       "main": "src/server.js",
+       "scripts": {
+              "start": "node src/server.js",
+              "dev": "nodemon src/server.js"
+       },
+       "dependencies": {
+              "axios": "^1.6.7",
+              "cookie-parser": "^1.4.6",
+              "cors": "^2.8.5",
+              "dotenv": "^16.4.5",
+              "express": "^4.18.2",
+              "express-rate-limit": "^7.1.5",
+              "form-data": "^4.0.0",
+              "helmet": "^7.1.0",
+              "jsonwebtoken": "^9.0.2",
+              "mongoose": "^8.0.0",
+              "multer": "^1.4.5-lts.1",
+              "node-fetch": "^2.7.0",
+              "node-telegram-bot-api": "^0.66.0",
+              "uuid": "^9.0.1",
+              "winston": "^3.11.0"
+       },
+       "devDependencies": {
+              "nodemon": "^3.0.3"
+       }
 }

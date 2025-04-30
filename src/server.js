@@ -8,24 +8,29 @@ const mongoose = require('mongoose');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const winston = require('winston');
+const fetch = require('node-fetch');
+const multer = require('multer');
+const path = require('path');
+const axios = require('axios');
+const FormData = require('form-data');
+const fs = require('fs');
+
+// Create public/uploads directory if it doesn't exist
+const uploadDir = path.join(__dirname, '..', 'public', 'uploads');
+fs.mkdirSync(uploadDir, { recursive: true });
 
 const app = express();
 
 // Load environment variables
-const PORT = process.env.PORT || 0; // Dynamic port for Render, random port locally
+const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'default-insecure-secret';
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin123';
 const LINK_PAYS_API_KEY = process.env.LINK_PAYS_API_KEY || null;
 const NETLIFY_URL = process.env.NETLIFY_URL || 'https://genzz-library.netlify.app';
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/genzz';
-
-// Validate critical environment variables
-if (!process.env.JWT_SECRET || process.env.JWT_SECRET === 'default-insecure-secret') {
-    console.warn('WARNING: JWT_SECRET is not set or using default. Set a secure value in production.');
-}
-if (!process.env.MONGO_URI) {
-    console.error('ERROR: MONGO_URI is not set. MongoDB connection will fail.');
-}
+const FREEIMAGE_API_KEY = process.env.FREEIMAGE_API_KEY;
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 // Logger
 const logger = winston.createLogger({
@@ -34,30 +39,14 @@ const logger = winston.createLogger({
     transports: [
         new winston.transports.File({ filename: 'error.log', level: 'error' }),
         new winston.transports.File({ filename: 'combined.log' }),
-        new winston.transports.Console(),
+        new winston.transports.Console()
     ],
 });
 
-// MongoDB connection with retry
-const connectToMongo = async () => {
-    let retries = 5;
-    while (retries) {
-        try {
-            await mongoose.connect(MONGO_URI, { connectTimeoutMS: 10000 });
-            logger.info('Connected to MongoDB');
-            return;
-        } catch (err) {
-            retries -= 1;
-            logger.error(`MongoDB connection error, ${retries} retries left: ${err.message}`);
-            if (!retries) {
-                logger.error('Failed to connect to MongoDB after retries. Exiting.');
-                process.exit(1);
-            }
-            await new Promise(resolve => setTimeout(resolve, 5000));
-        }
-    }
-};
-connectToMongo();
+// MongoDB connection
+mongoose.connect(MONGO_URI)
+    .then(() => logger.info('Connected to MongoDB'))
+    .catch(err => logger.error('MongoDB connection error:', err));
 
 const bookSchema = new mongoose.Schema({
     id: { type: String, default: uuidv4, unique: true },
@@ -67,45 +56,53 @@ const bookSchema = new mongoose.Schema({
     image_url: String,
     class: String,
     exam: String,
-    clicks: { type: Number, default: 0 },
+    clicks: Number,
 });
 
 const Book = mongoose.model('Book', bookSchema);
 
+// Multer setup for image uploads
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, 'public/uploads/');
+    },
+    filename: (req, file, cb) => {
+        cb(null, Date.now() + path.extname(file.originalname));
+    }
+});
+
+const upload = multer({
+    storage,
+    fileFilter: (req, file, cb) => {
+        const filetypes = /jpeg|jpg|png/;
+        const extname = filetypes.test(path.extname(file.originalname).toLowerCase());
+        const mimetype = filetypes.test(file.mimetype);
+        if (extname && mimetype) {
+            cb(null, true);
+        } else {
+            cb(new Error('Images only (jpg, jpeg, png)!'));
+        }
+    },
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
+
 // Middleware
-const allowedOrigins = [
-    'http://localhost:8080', // For local testing with live-server
-    NETLIFY_URL,
-    'https://genzz-library.netlify.app', // Fallback Netlify URL
-];
-app.use(
-    cors({
-        origin: (origin, callback) => {
-            if (!origin || allowedOrigins.includes(origin)) {
-                callback(null, true);
-            } else {
-                logger.warn(`CORS blocked for origin: ${origin}`);
-                callback(new Error('Not allowed by CORS'));
-            }
-        },
-        credentials: true,
-    })
-);
+const allowedOrigins = ['http://localhost:3000', NETLIFY_URL];
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin || allowedOrigins.includes(origin)) {
+            callback(null, true);
+        } else {
+            callback(new Error('Not allowed by CORS'));
+        }
+    },
+    credentials: true,
+}));
 app.use(helmet());
 app.use(express.json());
 app.use(cookieParser());
-app.use(
-    rateLimit({
-        windowMs: 15 * 60 * 1000, // 15 minutes
-        max: 100, // 100 requests per IP
-    })
-);
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-    logger.error(`Unhandled error: ${err.message}`);
-    res.status(500).json({ error: 'Internal server error' });
-});
+app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 100 }));
+app.use(express.static('public')); // Serve static files (e.g., uploads)
 
 // Routes
 app.get('/', (req, res) => {
@@ -115,100 +112,94 @@ app.get('/', (req, res) => {
 // JWT verification middleware
 const verifyToken = (req, res, next) => {
     const token = req.cookies.token || req.headers['authorization']?.split(' ')[1];
-    if (!token) {
-        logger.warn('No token provided');
-        return res.status(401).json({ error: 'No token' });
-    }
+    if (!token) return res.status(401).json({ error: 'No token' });
     try {
         req.user = jwt.verify(token, JWT_SECRET);
         next();
-    } catch (err) {
-        logger.warn(`Invalid token: ${err.message}`);
+    } catch {
         res.status(401).json({ error: 'Invalid token' });
     }
 };
 
 // Admin check
 const verifyAdmin = (req, res, next) => {
-    if (req.cookies.isAdmin === 'true' || req.headers['x-admin'] === 'true') {
-        next();
-    } else {
-        logger.warn('Admin access denied');
-        res.status(403).json({ error: 'Admin only' });
-    }
+    if (req.cookies.isAdmin === 'true' || req.headers['x-admin'] === 'true') next();
+    else res.status(403).json({ error: 'Admin only' });
 };
 
 // Shorten URL using LinkPays
 async function shortenUrl(originalUrl) {
-    if (!LINK_PAYS_API_KEY) {
-        logger.info('No LINK_PAYS_API_KEY provided, skipping URL shortening');
-        return originalUrl;
-    }
+    if (!LINK_PAYS_API_KEY) return originalUrl;
     try {
         const apiUrl = `https://linkpays.in/api?api=${LINK_PAYS_API_KEY}&url=${encodeURIComponent(originalUrl)}`;
-        const response = await fetch(apiUrl, { method: 'GET' });
+        const response = await fetch(apiUrl);
         const data = await response.json();
         return data.status === 'success' && data.shortenedUrl ? data.shortenedUrl : originalUrl;
-    } catch (err) {
-        logger.error(`URL shortening failed: ${err.message}`);
+    } catch {
         return originalUrl;
     }
 }
 
+// Image Upload Route
+app.post('/api/upload-cover', verifyAdmin, upload.single('cover'), async (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ success: false, error: 'No file uploaded' });
+    }
+
+    if (FREEIMAGE_API_KEY) {
+        // FreeImage.host upload
+        const formData = new FormData();
+        formData.append('source', fs.createReadStream(req.file.path));
+        formData.append('key', FREEIMAGE_API_KEY);
+
+        try {
+            const response = await axios.post('https://freeimage.host/api/1/upload', formData, {
+                headers: formData.getHeaders()
+            });
+            fs.unlinkSync(req.file.path); // Delete local file
+            const coverUrl = response.data.image.url;
+            logger.info(`Image uploaded to FreeImage.host: ${coverUrl}`);
+            res.json({ success: true, coverUrl });
+        } catch (error) {
+            logger.error('FreeImage.host upload error:', error);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    } else {
+        // Local storage fallback
+        const coverUrl = `/uploads/${req.file.filename}`;
+        logger.info(`Image uploaded locally: ${coverUrl}`);
+        res.json({ success: true, coverUrl });
+    }
+});
+
 // Generate Key
 app.post('/api/generate-key', async (req, res) => {
     const { duration, userId, url } = req.body;
-    if (!duration || !userId || !url) {
-        logger.warn('Missing fields in generate-key request');
-        return res.status(400).json({ error: 'Missing fields' });
-    }
+    if (!duration || !userId || !url) return res.status(400).json({ error: 'Missing fields' });
 
-    try {
-        const expiryMs = duration === '24hr' ? 24 * 60 * 60 * 1000 : 48 * 60 * 60 * 1000;
-        const expiry = Date.now() + expiryMs;
-        const token = jwt.sign({ userId, expiry }, JWT_SECRET, { expiresIn: expiryMs / 1000 });
+    const expiryMs = duration === '24hr' ? 24 * 60 * 60 * 1000 : 48 * 60 * 60 * 1000;
+    const expiry = Date.now() + expiryMs;
+    const token = jwt.sign({ userId, expiry }, JWT_SECRET, { expiresIn: expiryMs / 1000 });
 
-        const fullUrl = `${NETLIFY_URL}${url}?token=${token}`;
-        const shortUrl = await shortenUrl(fullUrl);
+    const fullUrl = `${NETLIFY_URL}${url}?token=${token}`;
+    const shortUrl = await shortenUrl(fullUrl);
 
-        res.cookie('token', token, {
-            httpOnly: true,
-            sameSite: 'strict',
-            secure: process.env.NODE_ENV === 'production', // Secure cookies in production
-        });
-        res.json({ token, expiry, shortUrl });
-    } catch (err) {
-        logger.error(`Error in generate-key: ${err.message}`);
-        res.status(500).json({ error: 'Failed to generate key' });
-    }
+    res.cookie('token', token, { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production' });
+    res.json({ token, expiry, shortUrl });
 });
 
 // Validate Key
 app.post('/api/validate-key', verifyToken, (req, res) => {
     const { userId, expiry } = req.user;
-    if (Date.now() > expiry) {
-        logger.warn('Token expired');
-        return res.status(401).json({ error: 'Token expired' });
-    }
+    if (Date.now() > expiry) return res.status(401).json({ error: 'Token expired' });
     res.json({ success: true, userId, expiry });
 });
 
 // Admin login
 app.post('/api/admin-login', (req, res) => {
     const { password } = req.body;
-    if (!password) {
-        logger.warn('No password provided for admin login');
-        return res.status(400).json({ error: 'Password required' });
-    }
-    if (password !== ADMIN_PASSWORD) {
-        logger.warn('Incorrect admin password');
-        return res.status(401).json({ error: 'Wrong password' });
-    }
-    res.cookie('isAdmin', 'true', {
-        httpOnly: true,
-        sameSite: 'strict',
-        secure: process.env.NODE_ENV === 'production', // Secure cookies in production
-    });
+    if (password !== ADMIN_PASSWORD) return res.status(401).json({ error: 'Wrong password' });
+    res.cookie('isAdmin', 'true', { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production' });
     res.json({ success: true });
 });
 
@@ -218,18 +209,15 @@ app.get('/api/books', async (req, res) => {
         const books = await Book.find();
         res.json(books);
     } catch (err) {
-        logger.error(`Error fetching books: ${err.message}`);
-        res.status(500).json({ error: 'Failed to fetch books' });
+        logger.error('Error fetching books:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
 // Add book
 app.post('/api/books', verifyAdmin, async (req, res) => {
     const { title, author, link, image_url, class: bookClass, exam } = req.body;
-    if (!title || !author || !link) {
-        logger.warn('Missing required fields in add book request');
-        return res.status(400).json({ error: 'Missing required fields' });
-    }
+    if (!title || !author || !link) return res.status(400).json({ error: 'Missing required fields' });
 
     try {
         const newBook = new Book({
@@ -246,8 +234,8 @@ app.post('/api/books', verifyAdmin, async (req, res) => {
         logger.info(`Book added: ${title}`);
         res.json({ success: true, book: newBook });
     } catch (err) {
-        logger.error(`Error adding book: ${err.message}`);
-        res.status(500).json({ error: 'Failed to add book' });
+        logger.error('Error adding book:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -255,15 +243,12 @@ app.post('/api/books', verifyAdmin, async (req, res) => {
 app.delete('/api/books/:id', verifyAdmin, async (req, res) => {
     try {
         const book = await Book.findOneAndDelete({ id: req.params.id });
-        if (!book) {
-            logger.warn(`Book not found: ${req.params.id}`);
-            return res.status(404).json({ error: 'Not found' });
-        }
-        logger.info(`Book deleted: ${req.params.id}`);
+        if (!book) return res.status(404).json({ error: 'Not found' });
+        logger.info(`Book deleted: ${book.title}`);
         res.json({ success: true });
     } catch (err) {
-        logger.error(`Error deleting book: ${err.message}`);
-        res.status(500).json({ error: 'Failed to delete book' });
+        logger.error('Error deleting book:', err);
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -271,18 +256,38 @@ app.delete('/api/books/:id', verifyAdmin, async (req, res) => {
 app.post('/api/books/:id/click', async (req, res) => {
     try {
         const book = await Book.findOne({ id: req.params.id });
-        if (!book) {
-            logger.warn(`Book not found for click tracking: ${req.params.id}`);
-            return res.status(404).json({ error: 'Not found' });
-        }
+        if (!book) return res.status(404).json({ error: 'Not found' });
 
         book.clicks += 1;
         await book.save();
-        logger.info(`Click tracked for book: ${req.params.id}`);
+        logger.info(`Click tracked for book: ${book.title}`);
         res.json({ success: true });
     } catch (err) {
-        logger.error(`Error tracking click: ${err.message}`);
-        res.status(500).json({ error: 'Failed to track click' });
+        logger.error('Error tracking click:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Reviews (Telegram placeholder)
+app.post('/api/reviews', async (req, res) => {
+    const { name, message } = req.body;
+    if (!name || !message) return res.status(400).json({ error: 'Missing fields' });
+
+    if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
+        const TelegramBot = require('node-telegram-bot-api');
+        const bot = new TelegramBot(TELEGRAM_BOT_TOKEN, { polling: true });
+        try {
+            await bot.sendMessage(TELEGRAM_CHAT_ID, `Query from ${name}: ${message}`);
+            logger.info(`Review sent to Telegram: ${name}`);
+            res.json({ success: true });
+        } catch (err) {
+            logger.error('Telegram error:', err);
+            res.status(500).json({ error: err.message });
+        }
+    } else {
+        // Fallback: Log review
+        logger.info(`Review received (no Telegram): ${name} - ${message}`);
+        res.json({ success: true });
     }
 });
 
@@ -290,4 +295,3 @@ app.post('/api/books/:id/click', async (req, res) => {
 app.listen(PORT, '0.0.0.0', () => {
     logger.info(`Server running on http://0.0.0.0:${PORT}`);
 });
-

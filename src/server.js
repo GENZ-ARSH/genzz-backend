@@ -22,7 +22,7 @@ const LINK_PAYS_API_KEY = process.env.LINK_PAYS_API_KEY || (() => {
     console.warn('Warning: LINK_PAYS_API_KEY is not set.');
     return null;
 })();
-const NETLIFY_URL = process.env.NETLIFY_URL || 'https://genzz1.netlify.app';
+const NETLIFY_URL = process.env.NETLIFY_URL || 'https://genzz-library.netlify.app'; // Updated to correct URL
 const MONGO_URI = process.env.MONGO_URI || 'mongodb://localhost:27017/genzz';
 
 // Logger setup
@@ -40,7 +40,7 @@ const logger = winston.createLogger({
 });
 
 // MongoDB setup
-mongoose.connect(MONGO_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(MONGO_URI)
     .then(() => logger.info('Connected to MongoDB'))
     .catch(err => logger.error('MongoDB connection error:', err));
 
@@ -83,6 +83,7 @@ app.use(limiter);
 
 // Root route for testing
 app.get('/', (req, res) => {
+    logger.info('Root route accessed');
     res.json({ message: 'Genzz Backend API is running. Use /api endpoints (e.g., /api/generate-key, /api/books).' });
 });
 
@@ -99,7 +100,7 @@ const verifyToken = (req, res, next) => {
         req.user = decoded;
         next();
     } catch (error) {
-        logger.error('Token verification error:', error);
+        logger.error('Token verification error:', error.message);
         res.status(401).json({ error: 'Invalid or expired token' });
     }
 };
@@ -114,7 +115,7 @@ const verifyAdmin = (req, res, next) => {
     next();
 };
 
-// LinkPays API integration (updated to GET)
+// LinkPays API integration
 async function shortenUrl(originalUrl) {
     if (!LINK_PAYS_API_KEY) {
         logger.error('LinkPays API key is missing');
@@ -124,7 +125,7 @@ async function shortenUrl(originalUrl) {
     try {
         const encodedUrl = encodeURIComponent(originalUrl);
         const apiUrl = `https://linkpays.in/api?api=${LINK_PAYS_API_KEY}&url=${encodedUrl}`;
-        logger.info('Attempting to shorten URL:', originalUrl);
+        logger.info('Shortening URL:', { originalUrl, apiUrl });
 
         const response = await fetch(apiUrl, { method: 'GET' });
         const data = await response.json();
@@ -134,21 +135,22 @@ async function shortenUrl(originalUrl) {
             logger.info('Shortened URL:', data.shortenedUrl);
             return data.shortenedUrl;
         } else {
-            logger.error('LinkPays API error:', data);
+            logger.error('LinkPays API error:', data.message || JSON.stringify(data));
             return originalUrl;
         }
     } catch (error) {
-        logger.error('Error calling LinkPays API:', error);
+        logger.error('Error calling LinkPays API:', error.message);
         return originalUrl;
     }
 }
 
 // API Endpoints
 app.post('/api/generate-key', async (req, res) => {
+    logger.info('Received generate-key request:', req.body);
     const { duration, userId, url } = req.body;
     if (!duration || !userId || !url) {
-        logger.warn('Missing required fields for generate-key');
-        return res.status(400).json({ error: 'Missing required fields' });
+        logger.warn('Missing required fields for generate-key', { body: req.body });
+        return res.status(400).json({ error: 'Missing required fields: duration, userId, url are required' });
     }
 
     try {
@@ -158,18 +160,22 @@ app.post('/api/generate-key', async (req, res) => {
 
         const originalUrl = `${NETLIFY_URL}${url}?token=${token}`;
         const shortUrl = await shortenUrl(originalUrl);
-        logger.info('Generated shortUrl:', shortUrl);
+        logger.info('Generated key:', { token, expiry, shortUrl });
 
         if (!shortUrl.startsWith('https://') && !shortUrl.startsWith('http://')) {
             logger.error('Invalid shortUrl generated:', shortUrl);
             return res.status(500).json({ error: 'Failed to generate valid short URL' });
         }
 
-        res.cookie('token', token, { httpOnly: true, secure: process.env.NODE_ENV === 'production' });
+        res.cookie('token', token, { 
+            httpOnly: true, 
+            secure: process.env.NODE_ENV === 'production',
+            sameSite: 'strict'
+        });
         res.json({ success: true, token, expiry, shortUrl });
     } catch (error) {
-        logger.error('Generate key error:', error);
-        res.status(500).json({ error: 'Failed to generate key' });
+        logger.error('Generate key error:', error.message);
+        res.status(500).json({ error: 'Failed to generate key: ' + error.message });
     }
 });
 
@@ -177,17 +183,19 @@ app.post('/api/validate-key', verifyToken, (req, res) => {
     try {
         const { userId, expiry } = req.user;
         if (Date.now() > expiry) {
-            logger.warn('Token expired');
+            logger.warn('Token expired', { userId });
             return res.status(401).json({ error: 'Token expired' });
         }
+        logger.info('Key validated successfully', { userId, expiry });
         res.json({ success: true, userId, expiry });
     } catch (error) {
-        logger.error('Validate key error:', error);
-        res.status(500).json({ error: 'Failed to validate key' });
+        logger.error('Validate key error:', error.message);
+        res.status(500).json({ error: 'Failed to validate key: ' + error.message });
     }
 });
 
 app.post('/api/admin-login', (req, res) => {
+    logger.info('Admin login attempt');
     const { password } = req.body;
     if (!password) {
         logger.warn('Password missing for admin-login');
@@ -199,25 +207,32 @@ app.post('/api/admin-login', (req, res) => {
         return res.status(401).json({ error: 'Invalid password' });
     }
 
-    res.cookie('isAdmin', 'true', { httpOnly: true, secure: process.env.NODE_ENV === 'production' });
+    res.cookie('isAdmin', 'true', { 
+        httpOnly: true, 
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict'
+    });
+    logger.info('Admin login successful');
     res.json({ success: true });
 });
 
 app.get('/api/books', async (req, res) => {
     try {
         const books = await Book.find();
+        logger.info('Books fetched:', { count: books.length });
         res.json(books);
     } catch (error) {
-        logger.error('Get books error:', error);
-        res.status(500).json({ error: 'Failed to fetch books' });
+        logger.error('Get books error:', error.message);
+        res.status(500).json({ error: 'Failed to fetch books: ' + error.message });
     }
 });
 
 app.post('/api/books', verifyAdmin, async (req, res) => {
+    logger.info('Add book request:', req.body);
     const { title, author, link, image_url, class: bookClass, exam } = req.body;
     if (!title || !author || !link) {
-        logger.warn('Missing required fields for adding book');
-        return res.status(400).json({ error: 'Missing required fields' });
+        logger.warn('Missing required fields for adding book', { body: req.body });
+        return res.status(400).json({ error: 'Missing required fields: title, author, link are required' });
     }
 
     try {
@@ -235,13 +250,14 @@ app.post('/api/books', verifyAdmin, async (req, res) => {
         logger.info('Book added:', newBook);
         res.json({ success: true, book: newBook });
     } catch (error) {
-        logger.error('Add book error:', error);
-        res.status(500).json({ error: 'Failed to add book' });
+        logger.error('Add book error:', error.message);
+        res.status(500).json({ error: 'Failed to add book: ' + error.message });
     }
 });
 
 app.delete('/api/books/:id', verifyAdmin, async (req, res) => {
     const { id } = req.params;
+    logger.info('Delete book request:', { id });
     try {
         const book = await Book.findOneAndDelete({ id });
         if (!book) {
@@ -251,13 +267,14 @@ app.delete('/api/books/:id', verifyAdmin, async (req, res) => {
         logger.info('Book deleted:', id);
         res.json({ success: true });
     } catch (error) {
-        logger.error('Delete book error:', error);
-        res.status(500).json({ error: 'Failed to delete book' });
+        logger.error('Delete book error:', error.message);
+        res.status(500).json({ error: 'Failed to delete book: ' + error.message });
     }
 });
 
 app.post('/api/books/:id/click', async (req, res) => {
     const { id } = req.params;
+    logger.info('Track click request:', { id });
     try {
         const book = await Book.findOne({ id });
         if (!book) {
@@ -269,15 +286,21 @@ app.post('/api/books/:id/click', async (req, res) => {
         logger.info(`Click tracked for book: ${id}, clicks: ${book.clicks}`);
         res.json({ success: true, clicks: book.clicks });
     } catch (error) {
-        logger.error('Track click error:', error);
-        res.status(500).json({ error: 'Failed to track click' });
+        logger.error('Track click error:', error.message);
+        res.status(500).json({ error: 'Failed to track click: ' + error.message });
     }
 });
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-    logger.error('Server error:', err);
+    logger.error('Server error:', { error: err.message, stack: err.stack });
     res.status(500).json({ error: 'Internal server error' });
+});
+
+// 404 handler for undefined routes
+app.use((req, res) => {
+    logger.warn('Route not found:', { method: req.method, url: req.url });
+    res.status(404).json({ error: 'Route not found' });
 });
 
 app.listen(PORT, () => {
